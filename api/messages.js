@@ -1,48 +1,41 @@
 // api/messages.js
 
-const fs = require('fs').promises;
-const path = require('path');
-
-const dataPath = path.join(__dirname, 'data.json');
-
-// Helper function untuk membaca data
-const readData = async () => {
-    try {
-        const data = await fs.readFile(dataPath, 'utf-8');
-        // Pastikan file tidak kosong sebelum di-parse
-        if (data.trim() === '') {
-            return [];
-        }
-        return JSON.parse(data);
-    } catch (error) {
-        // Jika file tidak ada (ENOENT) atau kosong, kembalikan array kosong
-        if (error.code === 'ENOENT' || error instanceof SyntaxError) {
-            console.log('data.json tidak ditemukan atau kosong, membuat array kosong.');
-            return [];
-        }
-        // Untuk error lain, lempar kembali
-        throw error;
-    }
-};
-
-// Helper function untuk menulis data
-const writeData = async (data) => {
-    // Menulis data sebagai string JSON yang terformat
-    await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
-};
+const { kv } = require('@vercel/kv');
 
 // Handler untuk GET dan POST
 module.exports = async (req, res) => {
     try {
         if (req.method === 'GET') {
-            const messages = await readData();
-            res.status(200).json(messages);
+            // Ambil semua pesan dari KV
+            const messagesList = await kv.lrange('messages', 0, -1);
+            const messages = messagesList.map(msg => JSON.parse(msg));
+            
+            // Filter pesan dalam 24 jam terakhir
+            const twentyFourHoursAgo = Date.now() - (24 * 60 * 60 * 1000);
+            const recentMessages = messages.filter(msg => new Date(msg.timestamp).getTime() > twentyFourHoursAgo);
+            
+            res.status(200).json(recentMessages);
 
         } else if (req.method === 'POST') {
             const newMessage = { ...req.body, timestamp: new Date().toISOString() };
-            const messages = await readData();
-            messages.push(newMessage);
-            await writeData(messages);
+            
+            // Simpan pesan baru ke dalam list 'messages' di KV
+            await kv.lpush('messages', JSON.stringify(newMessage));
+            
+            // Opsional: Hapus pesan-pesan lama jika list terlalu panjang untuk mencegah pembengkakan
+            // KV tidak memiliki TTL per-item, jadi kita lakukan cleanup manual
+            const allMessages = await kv.lrange('messages', 0, -1);
+            const cutoffTime = Date.now() - (24 * 60 * 60 * 1000);
+            const validMessages = allMessages.filter(msg => new Date(JSON.parse(msg).timestamp).getTime() > cutoffTime);
+            
+            // Jika ada pesan yang dihapus, tulis ulang listnya
+            if (validMessages.length < allMessages.length) {
+                await kv.del('messages');
+                if (validMessages.length > 0) {
+                    await kv.lpush('messages', ...validMessages);
+                }
+            }
+
             res.status(201).json(newMessage);
 
         } else {
@@ -50,7 +43,7 @@ module.exports = async (req, res) => {
             res.status(405).end(`Method ${req.method} Not Allowed`);
         }
     } catch (error) {
-        console.error('Error di /api/messages:', error); // Tambahkan log untuk debugging
+        console.error('Error di /api/messages:', error);
         res.status(500).json({ error: 'Gagal memproses permintaan', details: error.message });
     }
 };
