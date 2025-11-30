@@ -1,0 +1,9 @@
+# Dependencies
+node_modules/
+.env
+
+# Build output
+.vercel
+
+# Database file (tidak diperlukan di serverless)
+/api/messages.db
